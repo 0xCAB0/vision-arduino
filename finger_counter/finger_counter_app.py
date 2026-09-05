@@ -2,6 +2,7 @@
 to an Arduino running serial_7seg over a serial line at 9600 baud."""
 
 import argparse
+import contextlib
 import itertools
 import os
 import queue
@@ -10,6 +11,8 @@ import threading
 import time
 import tkinter as tk
 from tkinter import messagebox, ttk
+
+os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 
 import cv2
 import serial
@@ -28,6 +31,9 @@ MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
     "hand_landmarker/float16/1/hand_landmarker.task"
 )
+ARDUINO_VENDORS = {0x2341, 0x1A86, 0x10C4, 0x2A03, 0x303A}
+
+
 def resource_path(rel):
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, rel)
@@ -65,25 +71,141 @@ def draw_hand(frame, landmarks, thickness=2):
         cv2.circle(frame, p, thickness + 1, (255, 0, 255), -1, cv2.LINE_AA)
 
 
+@contextlib.contextmanager
+def suppressed_stderr():
+    with open(os.devnull, "w") as devnull:
+        saved = os.dup(2)
+        try:
+            sys.stderr.flush()
+            os.dup2(devnull.fileno(), 2)
+            yield
+        finally:
+            os.dup2(saved, 2)
+            os.close(saved)
+
+
+def camera_labels():
+    try:
+        from pygrabber.dshow_graph import FilterGraph
+        return {i: name for i, name in enumerate(FilterGraph().get_input_devices())}
+    except Exception:
+        return {}
+
+
 def list_cameras(max_index=6):
     found = []
-    for idx in range(max_index):
-        cap = cv2.VideoCapture(idx, cv2.CAP_ANY)
-        ok = cap.isOpened()
-        if ok:
-            ok, _ = cap.read()
-        cap.release()
-        if ok:
-            found.append(str(idx))
+    with suppressed_stderr():
+        for idx in range(max_index):
+            cap = cv2.VideoCapture(idx, cv2.CAP_ANY)
+            ok = cap.isOpened()
+            if ok:
+                ok, _ = cap.read()
+            cap.release()
+            if ok:
+                found.append(idx)
     return found
 
 
 def list_serial_ports():
-    return [p.device for p in list_ports.comports()]
+    ports = []
+    for p in list_ports.comports():
+        desc = p.description or ""
+        if desc.lower() in ("n/a", "unknown"):
+            desc = ""
+        if p.vid in ARDUINO_VENDORS or "arduino" in desc.lower():
+            label = f"Arduino ({p.device})"
+        elif desc and desc != p.device:
+            label = f"{desc} ({p.device})"
+        else:
+            label = p.device
+        ports.append((label, p.device))
+    ports.sort(key=lambda t: (not t[0].startswith("Arduino"), t[1]))
+    return ports
 
 
 def model_present():
     return os.path.isfile(MODEL_PATH)
+
+
+def permission_hint(exc):
+    msg = str(exc)
+    if "Permission" not in msg and "Errno 13" not in msg and "Access is denied" not in msg:
+        return ""
+    return (
+        "\n\nPermission denied. Fixes:\n"
+        "  Linux: add yourself to the dialout group, then log out/in\n"
+        '    NixOS: users.users.<you>.extraGroups = [ "dialout" ];\n'
+        "    other distros: sudo usermod -aG dialout $USER\n"
+        "  or install the udev rule from 99-arduino.rules (see README)\n"
+        "  Windows: close other programs using this COM port"
+    )
+
+
+class CameraIdentifyWindow:
+    def __init__(self, root, cam_index):
+        self.stop_event = threading.Event()
+        self.frame_q = queue.Queue(maxsize=1)
+        self._photo = None
+        self.cap = cv2.VideoCapture(cam_index, cv2.CAP_ANY)
+        if not self.cap.isOpened():
+            self.cap.release()
+            raise RuntimeError(f"Cannot open camera {cam_index}")
+        self.win = tk.Toplevel(root)
+        self.win.title(f"Identify camera {cam_index}")
+        self.win.protocol("WM_DELETE_WINDOW", self.close)
+        tk.Label(
+            self.win,
+            text=f"This window shows CAMERA {cam_index}\nClose it when you are done.",
+            font=("TkDefaultFont", 11, "bold"),
+        ).pack(padx=8, pady=6)
+        self.label = tk.Label(self.win, bg="black", width=480, height=360)
+        self.label.pack(padx=8, pady=(0, 8))
+        self.worker = threading.Thread(target=self._run, args=(cam_index,), daemon=True)
+        self.worker.start()
+        self._poll()
+
+    def _run(self, cam_index):
+        while not self.stop_event.is_set():
+            ok, frame = self.cap.read()
+            if not ok:
+                time.sleep(0.05)
+                continue
+            h, w = frame.shape[:2]
+            cv2.putText(
+                frame, f"CAMERA {cam_index}", (30, 80),
+                cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 0), 8, cv2.LINE_AA,
+            )
+            cv2.putText(
+                frame, f"CAMERA {cam_index}", (30, 80),
+                cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 255), 3, cv2.LINE_AA,
+            )
+            scale = min(480 / w, 360 / h)
+            frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+            try:
+                self.frame_q.get_nowait()
+            except queue.Empty:
+                pass
+            self.frame_q.put(frame)
+
+    def _poll(self):
+        if self.stop_event.is_set():
+            return
+        try:
+            frame = self.frame_q.get_nowait()
+            self._photo = ImageTk.PhotoImage(
+                Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)),
+                master=self.win,
+            )
+            self.label.configure(image=self._photo, width=480, height=360)
+        except queue.Empty:
+            pass
+        self.win.after(33, self._poll)
+
+    def close(self):
+        self.stop_event.set()
+        self.worker.join(timeout=2)
+        self.cap.release()
+        self.win.destroy()
 
 
 class FingerCounterApp:
@@ -100,23 +222,30 @@ class FingerCounterApp:
         self.landmarker = None
         self.last_sent = None
         self._photo = None
+        self.cam_map = {"Camera index 0": 0}
+        self.port_map = {}
+        self.identify_win = None
 
         bar = ttk.Frame(root, padding=8)
         bar.pack(side=tk.TOP, fill=tk.X)
 
         ttk.Label(bar, text="Camera:").pack(side=tk.LEFT)
-        self.cam_var = tk.StringVar()
+        self.cam_var = tk.StringVar(value="Camera index 0")
         self.cam_box = ttk.Combobox(
-            bar, textvariable=self.cam_var, values=["0"], width=8, state="readonly"
+            bar, textvariable=self.cam_var, values=list(self.cam_map),
+            width=26, state="readonly",
         )
-        self.cam_box.pack(side=tk.LEFT, padx=(2, 8))
+        self.cam_box.pack(side=tk.LEFT, padx=(2, 4))
         ttk.Button(bar, text="Refresh", command=self.refresh_cameras).pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        ttk.Button(bar, text="Identify", command=self.identify_camera).pack(
             side=tk.LEFT, padx=(0, 16)
         )
 
         ttk.Label(bar, text="Arduino:").pack(side=tk.LEFT)
         self.port_var = tk.StringVar()
-        self.port_box = ttk.Combobox(bar, textvariable=self.port_var, width=12)
+        self.port_box = ttk.Combobox(bar, textvariable=self.port_var, width=24)
         self.port_box.pack(side=tk.LEFT, padx=(2, 8))
         ttk.Button(bar, text="Refresh", command=self.refresh_ports).pack(
             side=tk.LEFT, padx=(0, 16)
@@ -155,21 +284,53 @@ class FingerCounterApp:
         threading.Thread(target=self._probe_cameras, daemon=True).start()
 
     def _probe_cameras(self):
-        cams = list_cameras()
-        if not cams:
-            cams = ["0"]
-        self.root.after(0, lambda: self._cameras_found(cams))
+        labels = camera_labels()
+        found = list_cameras()
+        cam_map = {}
+        for idx in found:
+            name = labels.get(idx)
+            label = f"{name} (index {idx})" if name else f"Camera index {idx}"
+            cam_map[label] = idx
+        if not cam_map:
+            cam_map["Camera index 0 (not detected)"] = 0
+        self.root.after(0, lambda: self._cameras_found(cam_map))
 
-    def _cameras_found(self, cams):
-        self.cam_box.configure(values=cams)
-        if self.cam_var.get() not in cams:
-            self.cam_var.set(cams[0])
+    def _cameras_found(self, cam_map):
+        self.cam_map = cam_map
+        self.cam_box.configure(values=list(cam_map))
+        if self.cam_var.get() not in cam_map:
+            self.cam_var.set(next(iter(cam_map)))
 
     def refresh_ports(self):
         ports = list_serial_ports()
-        self.port_box.configure(values=ports)
-        if self.port_var.get() not in ports:
-            self.port_var.set(ports[0] if ports else "")
+        self.port_map = {label: device for label, device in ports}
+        self.port_box.configure(values=[label for label, _ in ports])
+        arduino = next((label for label, _ in ports if label.startswith("Arduino")), None)
+        current = self.port_var.get()
+        if current not in self.port_map:
+            self.port_var.set(arduino or next(iter(self.port_map), ""))
+
+    def identify_camera(self):
+        if self.identify_win is not None:
+            self.identify_win.win.lift()
+            return
+        idx = self.cam_map.get(self.cam_var.get())
+        if idx is None:
+            messagebox.showerror("FingerCounter", "Select a camera first.")
+            return
+        try:
+            self.identify_win = CameraIdentifyWindow(self.root, idx)
+        except RuntimeError as exc:
+            messagebox.showerror("FingerCounter", str(exc))
+            return
+        self.identify_win.win.protocol(
+            "WM_DELETE_WINDOW", self._identify_closed
+        )
+
+    def _identify_closed(self):
+        if self.identify_win is not None:
+            self.identify_win.close()
+            self.identify_win = None
 
     def start(self):
         if self.worker is not None:
@@ -181,17 +342,20 @@ class FingerCounterApp:
                 "Run setup-dev.sh / install_windows.bat to download it.",
             )
             return
-        try:
-            cam_index = int(self.cam_var.get())
-        except (TypeError, ValueError):
-            messagebox.showerror("FingerCounter", "Select a valid camera index.")
+        cam_index = self.cam_map.get(self.cam_var.get())
+        if cam_index is None:
+            messagebox.showerror("FingerCounter", "Select a valid camera.")
             return
         cap = cv2.VideoCapture(cam_index, cv2.CAP_ANY)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         if not cap.isOpened():
             cap.release()
-            messagebox.showerror("FingerCounter", f"Cannot open camera {cam_index}.")
+            messagebox.showerror(
+                "FingerCounter",
+                f"Cannot open camera {cam_index}.\n"
+                "On Linux make sure your user is in the 'video' group.",
+            )
             return
         ok, _ = cap.read()
         if not ok:
@@ -200,13 +364,17 @@ class FingerCounterApp:
             return
 
         ser = None
-        port = self.port_var.get().strip()
+        label = self.port_var.get().strip()
+        port = self.port_map.get(label, label)
         if port:
             try:
                 ser = serial.Serial(port, BAUD, timeout=0.1)
             except serial.SerialException as exc:
                 cap.release()
-                messagebox.showerror("FingerCounter", f"Cannot open {port}:\n{exc}")
+                messagebox.showerror(
+                    "FingerCounter",
+                    f"Cannot open {port}:\n{exc}{permission_hint(exc)}",
+                )
                 return
             ser.reset_input_buffer()
 
@@ -303,7 +471,7 @@ class FingerCounterApp:
                 self.msg_var.set(f"Arduino: {echo}")
             self.last_sent = count
         except serial.SerialException as exc:
-            self.msg_var.set(f"Serial error: {exc}")
+            self.msg_var.set(f"Serial error: {exc}{permission_hint(exc)}")
 
     def poll_frames(self):
         try:
@@ -326,6 +494,9 @@ class FingerCounterApp:
         self.root.after(15, self.poll_frames)
 
     def on_close(self):
+        if self.identify_win is not None:
+            self.identify_win.close()
+            self.identify_win = None
         self.stop()
         self.root.destroy()
 
@@ -349,8 +520,12 @@ def selftest():
     print("imports OK: opencv", cv2.__version__, "| mediapipe", mp.__version__,
           "| pyserial", serial.VERSION)
     print("hand model:", "found" if model_present() else "MISSING")
-    print("cameras:", list_cameras() or "none")
-    print("serial ports:", list_serial_ports() or "none")
+    labels = camera_labels()
+    for idx in list_cameras():
+        name = labels.get(idx)
+        print(f"camera {idx}: {name}" if name else f"camera {idx}")
+    for label, device in list_serial_ports():
+        print(f"serial: {label} -> {device}")
     return 0
 
 

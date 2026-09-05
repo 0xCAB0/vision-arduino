@@ -2,3 +2,4 @@ opencv-python
 mediapipe
 pyserial
 Pillow
+pygrabber; sys_platform == "win32"

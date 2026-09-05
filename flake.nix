@@ -71,6 +71,15 @@
             export NIX_LD="${pkgs.stdenv.cc.bintools.dynamicLinker}"
             export NIX_LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath wheelLibs}"
             export LD_LIBRARY_PATH="$NIX_LD_LIBRARY_PATH''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            me="$(id -un)"
+            for grp in dialout video; do
+              if ! id -nG "$me" 2>/dev/null | grep -qw "$grp"; then
+                echo "WARNING: user '$me' is not in group '$grp' (needed for /dev/ttyUSB0 and the camera)."
+                echo "  Add to /etc/nixos/configuration.nix and rebuild:"
+                echo "    users.users.$me.extraGroups = [ \"dialout\" \"video\" ];"
+                echo "  Or paste the udev snippet from finger_counter/README.md"
+              fi
+            done
             echo "FingerCounter dev environment"
             echo "  ./finger_counter/setup-dev.sh    # create .venv and install deps (first time)"
             echo "  .venv/bin/python finger_counter/finger_counter_app.py"

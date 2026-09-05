@@ -1,0 +1,19 @@
+# FingerCounter - serial port access without sudo
+#
+# Gives regular users read/write access to common USB-serial adapters
+# (Arduino Uno/Mega/Nano, CH340/CH341 clones, CP210x).
+#
+# Install (non-NixOS):
+#   sudo cp 99-arduino.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#   # unplug and replug the Arduino
+#
+# NixOS (add to configuration.nix instead):
+#   services.udev.extraRules = builtins.readFile ./99-arduino.rules;
+#   # or paste the rules below into services.udev.extraRules = '' ... '';
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2a03", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", MODE="0666"

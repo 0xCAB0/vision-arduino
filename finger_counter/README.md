@@ -9,6 +9,48 @@ hands) and sends the digit (`'0'`–`'5'`) to an Arduino running
 - The digit is only sent when it changes, so the serial line stays quiet.
 - GUI lets you pick the camera and the Arduino port; a blank Arduino port runs
   the app without serial output.
+- **Identify** button opens a live preview of the selected camera so you can
+  tell cameras apart; on Windows, real device names are shown in the dropdown
+  (via DirectShow/pygrabber).
+- Ports are auto-labelled: boards with Arduino/vendor IDs show as
+  `Arduino (COM3)` and are preselected.
+- Serial permission problems are detected and reported with the exact fix
+  (see below).
+
+### Serial port permission (`could not open device` / permission denied)
+
+Don't run the app as root. Either add yourself to the `dialout` group
+(log out/in afterwards):
+
+```nix
+# NixOS
+users.users.<you>.extraGroups = [ "dialout" "video" ];
+```
+```bash
+# other distros
+sudo usermod -aG dialout $USER
+```
+
+or paste this into `/etc/nixos/configuration.nix` (NixOS) and run
+`sudo nixos-rebuild switch`, then log out/in once:
+
+```nix
+users.users.varo.extraGroups = [ "dialout" "video" ];
+
+services.udev.extraRules = ''
+  SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", MODE="0666"
+  SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", MODE="0666"
+  SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", MODE="0666"
+  SUBSYSTEM=="tty", ATTRS{idVendor}=="2a03", MODE="0666"
+  SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", MODE="0666"
+'';
+```
+
+(`dialout` = serial port `/dev/ttyUSB0`, `video` = webcam; the udev rules
+additionally grant all users access to Arduino, CH340 and CP210x adapters.)
+
+For camera access you may need the `video` group
+(`users.users.<you>.extraGroups = [ "video" ];`).
 
 ## NixOS (development)
 
@@ -22,10 +64,7 @@ cd finger_counter
 The hand-landmark model (`models/hand_landmarker.task`, ~8 MB) is downloaded
 automatically on first launch (or by `--selftest`).
 
-`--selftest` checks imports and lists detected cameras / serial ports.
-
-For camera and serial access as a normal user you may need to be in the
-`video` and `dialout` groups (`users.users.<you>.extraGroups`).
+`--selftest` checks imports and lists detected cameras (with names) / serial ports.
 
 ## Windows (shipping)
 
