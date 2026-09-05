@@ -28,8 +28,12 @@ MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
     "hand_landmarker/float16/1/hand_landmarker.task"
 )
-MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "models", "hand_landmarker.task")
+def resource_path(rel):
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, rel)
+
+
+MODEL_PATH = resource_path(os.path.join("models", "hand_landmarker.task"))
 HAND_CONNECTIONS = [
     (0, 1), (1, 2), (2, 3), (3, 4),
     (0, 5), (5, 6), (6, 7), (7, 8),
