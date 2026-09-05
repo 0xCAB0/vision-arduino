@@ -9,6 +9,9 @@ hands) and sends the digit (`'0'`–`'5'`) to an Arduino running
 - The digit is only sent when it changes, so the serial line stays quiet.
 - GUI lets you pick the camera and the Arduino port; a blank Arduino port runs
   the app without serial output.
+- The live video window shows the result in real time: skeleton overlay on each
+  detected hand, the per-hand finger count next to the wrist, a `FINGERS: N`
+  caption and a large digit with the total in the bottom-left corner.
 - **Identify** button opens a live preview of the selected camera so you can
   tell cameras apart; on Windows, real device names are shown in the dropdown
   (via DirectShow/pygrabber).

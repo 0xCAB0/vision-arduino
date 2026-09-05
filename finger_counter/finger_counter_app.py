@@ -71,6 +71,16 @@ def draw_hand(frame, landmarks, thickness=2):
         cv2.circle(frame, p, thickness + 1, (255, 0, 255), -1, cv2.LINE_AA)
 
 
+def draw_hand_count(frame, landmarks, count):
+    h, w = frame.shape[:2]
+    x = int(landmarks[0].x * w) + 15
+    y = int(landmarks[0].y * h) - 15
+    cv2.putText(frame, str(count), (x, y), cv2.FONT_HERSHEY_SIMPLEX,
+                1.4, (0, 0, 0), 6, cv2.LINE_AA)
+    cv2.putText(frame, str(count), (x, y), cv2.FONT_HERSHEY_SIMPLEX,
+                1.4, (0, 255, 255), 2, cv2.LINE_AA)
+
+
 @contextlib.contextmanager
 def suppressed_stderr():
     with open(os.devnull, "w") as devnull:
@@ -221,6 +231,7 @@ class FingerCounterApp:
         self.ser = None
         self.landmarker = None
         self.last_sent = None
+        self.last_total = None
         self._photo = None
         self.cam_map = {"Camera index 0": 0}
         self.port_map = {}
@@ -392,6 +403,7 @@ class FingerCounterApp:
         self.ser = ser
         self.landmarker = landmarker
         self.last_sent = None
+        self.last_total = None
         self.stop_event.clear()
         self.worker = threading.Thread(
             target=self._run, args=(cap, ser, landmarker), daemon=True
@@ -420,6 +432,7 @@ class FingerCounterApp:
         self.start_btn.configure(state=tk.NORMAL)
         self.stop_btn.configure(state=tk.DISABLED)
         self.count_var.set("Fingers: -")
+        self.last_total = None
         self.serial_var.set("Serial: off")
         self.msg_var.set("Stopped")
 
@@ -437,8 +450,11 @@ class FingerCounterApp:
             )
             total = 0
             for hand_landmarks in result.hand_landmarks:
-                total += count_fingers(hand_landmarks)
+                hand_count = count_fingers(hand_landmarks)
+                total += hand_count
                 draw_hand(frame, hand_landmarks)
+                draw_hand_count(frame, hand_landmarks, hand_count)
+            self.last_total = total
             self._send(total)
             self._overlay_count(frame, total)
             try:
@@ -448,14 +464,16 @@ class FingerCounterApp:
             self.frame_q.put(frame)
 
     def _overlay_count(self, frame, total):
-        cv2.putText(
-            frame, str(total), (20, 110), cv2.FONT_HERSHEY_SIMPLEX,
-            3.5, (0, 0, 0), 10, cv2.LINE_AA,
-        )
-        cv2.putText(
-            frame, str(total), (20, 110), cv2.FONT_HERSHEY_SIMPLEX,
-            3.5, (0, 255, 0), 4, cv2.LINE_AA,
-        )
+        h, w = frame.shape[:2]
+        label = f"FINGERS: {total}"
+        cv2.putText(frame, label, (20, 70), cv2.FONT_HERSHEY_SIMPLEX,
+                    1.2, (0, 0, 0), 6, cv2.LINE_AA)
+        cv2.putText(frame, label, (20, 70), cv2.FONT_HERSHEY_SIMPLEX,
+                    1.2, (0, 255, 0), 2, cv2.LINE_AA)
+        cv2.putText(frame, str(total), (20, h - 40), cv2.FONT_HERSHEY_SIMPLEX,
+                    4, (0, 0, 0), 12, cv2.LINE_AA)
+        cv2.putText(frame, str(total), (20, h - 40), cv2.FONT_HERSHEY_SIMPLEX,
+                    4, (0, 255, 0), 4, cv2.LINE_AA)
 
     def _send(self, count):
         if self.ser is None or count == self.last_sent:
@@ -486,9 +504,8 @@ class FingerCounterApp:
             self._photo = ImageTk.PhotoImage(canvas, master=self.root)
             self.video.configure(image=self._photo, width=DISPLAY_W, height=DISPLAY_H)
             if self.worker is not None:
-                self.count_var.set(
-                    f"Fingers: {self.last_sent if self.last_sent is not None else '-'}"
-                )
+                shown = self.last_total if self.last_total is not None else '-'
+                self.count_var.set(f"Fingers: {shown}")
         except queue.Empty:
             pass
         self.root.after(15, self.poll_frames)
