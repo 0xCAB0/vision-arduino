@@ -1,0 +1,10 @@
+.arduino15/
+.arduino-downloads/
+.arduino-user/
+.venv/
+finger_counter/models/
+__pycache__/
+build/
+dist/
+*.spec
+result
